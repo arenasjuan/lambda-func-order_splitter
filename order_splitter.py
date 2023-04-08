@@ -51,10 +51,10 @@ def process_order(order):
 
     with ThreadPoolExecutor() as executor:
         # Update all child orders in a single request
-        future1 = executor.submit(session.post, 'https://ssapi.shipstation.com/orders/createorders', json=child_orders)
+        future1 = executor.submit(session.post, 'https://ssapi.shipstation.com/orders/createorders', data=json.dumps(child_orders))
 
         # Update the parent order in ShipStation
-        future2 = executor.submit(session.post, 'https://ssapi.shipstation.com/orders/createorder', json=original_order)
+        future2 = executor.submit(session.post, 'https://ssapi.shipstation.com/orders/createorder', data=json.dumps(original_order))
 
         response1 = future1.result()
         response2 = future2.result()
