@@ -34,9 +34,6 @@ def lambda_handler(event, context):
         for future in as_completed(futures):
             future.result()
 
-    for order in orders:
-        process_order(order)
-
     return {
         'statusCode': 200,
         'body': json.dumps('Lambda function executed successfully')
@@ -52,42 +49,31 @@ def process_order(order):
     # Prepare the child orders and parent order
     original_order, child_orders = prepare_split_data(order)
 
-    # Create the child orders and store their orderIds
-    child_order_ids = []
+    with ThreadPoolExecutor() as executor:
+        # Update all child orders in a single request
+        future1 = executor.submit(session.post, 'https://ssapi.shipstation.com/orders/createorders', json=child_orders)
 
-    # Update all child orders in a single request
-    response = update_orders(child_orders)
-    
-    if response and response['results']:
-        for created_order in response['results']:
-            if created_order['success']:
-                child_order_ids.append(created_order['orderId'])
-                original_order['advancedOptions'].setdefault('mergedIds', [])  # Add this line
-                original_order['advancedOptions']['mergedIds'].append(created_order['orderId'])
+        # Update the parent order in ShipStation
+        future2 = executor.submit(session.post, 'https://ssapi.shipstation.com/orders/createorder', json=original_order)
 
-    # Update the parent order with the created child orders' orderIds
-    original_order['advancedOptions']['mergedIds'] = child_order_ids
+        response1 = future1.result()
+        response2 = future2.result()
 
-    # Update the parent order in ShipStation
-    update_orders([original_order])
-
-    return f"Successfully processed order {order['orderId']}"
-
-
-
-def update_orders(orders):
-    url = 'https://ssapi.shipstation.com/orders/createorders'
-
-    response = session.post(url, json=orders)
-
-    if response.status_code == 200:
-        print(f"Orders updated/created successfully")
-        print(f"Full response: {response.__dict__}")
-        return response.json()
+    if response1.status_code == 200:
+        print(f"Successfully created {len(child_orders)} children")
+        print(f"Full success response: {response1.__dict__}")
     else:
-        print(f"Unexpected status code: {response.status_code}")
-        print(f"Error updating/creating orders: {response.text}")
-        print(f"Full response: {response.__dict__}")
+        print(f"Unexpected status code for child orders: {response1.status_code}")
+        print(f"Full error response: {response1.__dict__}")
+
+    if response2.status_code == 200:
+        print(f"Parent order created successfully")
+        print(f"Full success response: {response2.__dict__}")
+    else:
+        print(f"Unexpected status code for parent order: {response2.status_code}")
+        print(f"Full error response: {response2.__dict__}")
+
+    return f"Successfully processed order #{order['orderNumber']}"
 
 
 def prepare_split_data(order):
