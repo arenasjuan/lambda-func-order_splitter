@@ -23,20 +23,16 @@ def lambda_handler(event, context):
 
     # Extract webhook payload
     payload = json.loads(event["body"])
-    print(payload)
     resource_url = payload['resource_url']
-    print(resource_url)
     response = session.get(resource_url)
-    print(response)
     data = response.json()
-    print(data)
     orders = data['orders']
     print(f"Number of orders: {len(orders)}")
 
-    '''with ThreadPoolExecutor(max_workers=8) as executor:
+    with ThreadPoolExecutor(max_workers=8) as executor:
         futures = [executor.submit(process_order, order) for order in orders]
         for future in as_completed(futures):
-            future.result()'''
+            future.result()
 
     for order in orders:
         process_order(order)
@@ -55,9 +51,6 @@ def process_order(order):
         return
     # Prepare the child orders and parent order
     original_order, child_orders = prepare_split_data(order)
-
-    print(f"Process_orders original order: {original_order}")
-    print(f"Process_orders child_orders: {child_orders}")
 
     # Create the child orders and store their orderIds
     child_order_ids = []
@@ -85,7 +78,6 @@ def process_order(order):
 def update_orders(orders):
     url = 'https://ssapi.shipstation.com/orders/createorders'
 
-    print(f"Update-ready child orders: {orders}")
     response = session.post(url, json=orders)
 
     if response.status_code == 200:
@@ -140,29 +132,17 @@ def prepare_split_data(order):
     original_order['items'] = [item for item in original_order['items'] if item['quantity'] > 0]
     original_order['orderNumber'] = f"{original_order['orderNumber']}-1"
     original_order['advancedOptions']['customField2'] = f"Shipment 1 of {total_shipments}"
-    print(f"Original order shipment check 1: {original_order['advancedOptions']['customField2']}")
 
     for i in range(len(child_orders)):
-        print(need_stk_tag)
         child_order = copy.deepcopy(child_orders[i])
-        print(child_order)
         child_order['orderNumber'] = f"{order['orderNumber']}-{i + 2}"
-        print(f"Order number for child {i+1}: {child_order['orderNumber']}")
         child_order['advancedOptions']['customField2'] = f"Shipment {i + 2} of {total_shipments}"
-        print(f"Shipment number for child {i+1}: {child_order['advancedOptions']['customField2']}")
         if need_stk_tag:
             if any(item['sku'] == 'OTP - STK' for item in child_order['items']):
                 child_order['advancedOptions']['customField1'] = "STK-Order"
-                print(f"STK-Order tag applied to child {i+1}")
                 need_stk_tag = False
-                print(f"need_stk_tag updated to {need_stk_tag}")
         child_orders[i] = child_order
 
-    formatted_output = ', '.join([f"Child {i+1}: {child['advancedOptions']['customField2']}" for i, child in enumerate(child_orders)])
-    print(f"Child shipment checks: {formatted_output}")
-
-
-    print(f"Original order shipment check 2: {original_order['advancedOptions']['customField2']}")
     if need_stk_tag:
         if len(original_order['advancedOptions']['customField1']) == 0:
             original_order['advancedOptions']['customField1'] = "STK-Order"
@@ -170,7 +150,7 @@ def prepare_split_data(order):
             original_order['advancedOptions']['customField1'] = "STK-Order, " + original_order['advancedOptions']['customField1']
         need_stk_tag = False
 
-    print(f"Original order: {original_order}")
+    print(f"Parent order: {original_order}")
     print(f"Child_orders: {child_orders}")
     return original_order, child_orders
 
@@ -188,7 +168,6 @@ def prepare_child_order(parent_order, child_order_items, shipment_counter):
     preset = config.presets[str(remaining_pouches_total)]
     child_order['weight']=preset['weight']
     child_order.update(preset)
-    print(preset)
     child_order['advancedOptions'].update(preset['advancedOptions'])  # Update advancedOptions separately
 
     # Update advanced options to reflect the relationship between the parent and child orders
@@ -199,5 +178,4 @@ def prepare_child_order(parent_order, child_order_items, shipment_counter):
     child_order['advancedOptions']['billToParty'] = "my_other_account"
     parent_order['advancedOptions']['billToParty'] = "my_other_account"
 
-    print(f"Child order after prepare_child_order: {child_order}")
     return child_order
