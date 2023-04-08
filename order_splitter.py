@@ -43,37 +43,72 @@ def order_split_required(order):
     total_pouches = sum([item['quantity'] * config.sku_to_pouches.get(item['sku'], 0) for item in order['items']])
     return total_pouches > 9
 
+def apply_preset_based_on_pouches(order):
+    total_pouches = sum([item['quantity'] * config.sku_to_pouches.get(item['sku'], 0) for item in order['items']])
+    preset = config.presets[str(total_pouches)]
+    order['weight'] = preset['weight']
+    order.update(preset)
+    order['advancedOptions'].update(preset['advancedOptions'])  # Update advancedOptions separately
+    return order
+
+def set_stk_order_tag(order, need_stk_tag):
+    if need_stk_tag:
+        if 'customField1' not in order['advancedOptions']:
+            order['advancedOptions']['customField1'] = ""
+
+        if len(order['advancedOptions']['customField1']) == 0:
+            order['advancedOptions']['customField1'] = "STK-Order"
+        else:
+            order['advancedOptions']['customField1'] = "STK-Order, " + order['advancedOptions']['customField1']
+    return order
+
+
 def process_order(order):
-    if not order_split_required(order):
-        return
-    # Prepare the child orders and parent order
-    original_order, child_orders = prepare_split_data(order)
+    need_stk_tag = any(item['sku'] == 'OTP - STK' for item in order['items'])
 
-    with ThreadPoolExecutor() as executor:
-        # Update all child orders in a single request
-        future1 = executor.submit(session.post, 'https://ssapi.shipstation.com/orders/createorders', data=json.dumps(child_orders))
+    if order_split_required(order):
+        # Prepare the child orders and parent order
+        original_order, child_orders = prepare_split_data(order)
 
-        # Update the parent order in ShipStation
-        future2 = executor.submit(session.post, 'https://ssapi.shipstation.com/orders/createorder', data=json.dumps(original_order))
+        with ThreadPoolExecutor() as executor:
+            # Update all child orders in a single request
+            future1 = executor.submit(session.post, 'https://ssapi.shipstation.com/orders/createorders', data=json.dumps(child_orders))
 
-        response1 = future1.result()
-        response2 = future2.result()
+            # Update the parent order in ShipStation
+            future2 = executor.submit(session.post, 'https://ssapi.shipstation.com/orders/createorder', data=json.dumps(original_order))
 
-    if response1.status_code == 200:
-        print(f"Successfully created {len(child_orders)} children")
-        print(f"Full success response: {response1.__dict__}")
+            response1 = future1.result()
+            response2 = future2.result()
+
+        if response1.status_code == 200:
+            print(f"Successfully created {len(child_orders)} children")
+            print(f"Full success response: {response1.__dict__}")
+        else:
+            print(f"Unexpected status code for child orders: {response1.status_code}")
+            print(f"Full error response: {response1.__dict__}")
+
+        if response2.status_code == 200:
+            print(f"Parent order created successfully")
+            print(f"Full success response: {response2.__dict__}")
+        else:
+            print(f"Unexpected status code for parent order: {response2.status_code}")
+            print(f"Full error response: {response2.__dict__}")
+
+        return f"Successfully processed order #{order['orderNumber']}"
+
     else:
-        print(f"Unexpected status code for child orders: {response1.status_code}")
-        print(f"Full error response: {response1.__dict__}")
+        order = apply_preset_based_on_pouches(order)
+        order = set_stk_order_tag(order, need_stk_tag)
+        response = session.post('https://ssapi.shipstation.com/orders/createorder', data=json.dumps(order))
 
-    if response2.status_code == 200:
-        print(f"Parent order created successfully")
-        print(f"Full success response: {response2.__dict__}")
-    else:
-        print(f"Unexpected status code for parent order: {response2.status_code}")
-        print(f"Full error response: {response2.__dict__}")
+        if response.status_code == 200:
+            print(f"Order updated successfully with preset")
+            print(f"Full success response: {response.__dict__}")
+        else:
+            print(f"Unexpected status code for updating order: {response.status_code}")
+            print(f"Full error response: {response.__dict__}")
 
-    return f"Successfully processed order #{order['orderNumber']}"
+        return f"Successfully processed order #{order['orderNumber']} without splitting"
 
 
 def prepare_split_data(order):
@@ -104,16 +139,15 @@ def prepare_split_data(order):
                 item_copy['quantity'] = temp_quantity
                 child_order_items.append(item_copy)
 
-        child_order = prepare_child_order(original_order, child_order_items, shipment_counter)
+        child_order = prepare_child_order(original_order, child_order_items)
         child_orders.append(child_order)
         shipment_counter += 1
 
     total_shipments = shipment_counter
 
     remaining_pouches_total = sum([item['quantity'] * config.sku_to_pouches.get(item['sku'], 0) for item in original_order['items']])
-    preset = config.presets[str(remaining_pouches_total)]
-    original_order['weight']=preset['weight']
-    original_order.update(preset)
+    original_order = apply_preset_based_on_pouches(original_order)
+
 
     original_order['items'] = [item for item in original_order['items'] if item['quantity'] > 0]
     original_order['orderNumber'] = f"{original_order['orderNumber']}-1"
@@ -124,16 +158,12 @@ def prepare_split_data(order):
         child_order['orderNumber'] = f"{order['orderNumber']}-{i + 2}"
         child_order['advancedOptions']['customField2'] = f"Shipment {i + 2} of {total_shipments}"
         if need_stk_tag:
-            if any(item['sku'] == 'OTP - STK' for item in child_order['items']):
-                child_order['advancedOptions']['customField1'] = "STK-Order"
-                need_stk_tag = False
+            child_order = set_stk_order_tag(child_order, need_stk_tag)  # Call the new function here
+            need_stk_tag = False
         child_orders[i] = child_order
 
     if need_stk_tag:
-        if len(original_order['advancedOptions']['customField1']) == 0:
-            original_order['advancedOptions']['customField1'] = "STK-Order"
-        else:
-            original_order['advancedOptions']['customField1'] = "STK-Order, " + original_order['advancedOptions']['customField1']
+        original_order = set_stk_order_tag(original_order, need_stk_tag)  # Call the new function here
         need_stk_tag = False
 
     print(f"Parent order: {original_order}")
@@ -141,7 +171,7 @@ def prepare_split_data(order):
     return original_order, child_orders
 
 
-def prepare_child_order(parent_order, child_order_items, shipment_counter):
+def prepare_child_order(parent_order, child_order_items):
     child_order = copy.deepcopy(parent_order)
     if 'orderId' in child_order:
         del child_order['orderId']
@@ -151,10 +181,7 @@ def prepare_child_order(parent_order, child_order_items, shipment_counter):
     child_order['paymentDate'] = None
 
     remaining_pouches_total = sum([item['quantity'] * config.sku_to_pouches.get(item['sku'], 0) for item in child_order_items])
-    preset = config.presets[str(remaining_pouches_total)]
-    child_order['weight']=preset['weight']
-    child_order.update(preset)
-    child_order['advancedOptions'].update(preset['advancedOptions'])  # Update advancedOptions separately
+    child_order = apply_preset_based_on_pouches(child_order)
 
     # Update advanced options to reflect the relationship between the parent and child orders
     child_order['advancedOptions']['mergedOrSplit'] = True
